@@ -714,11 +714,14 @@ async function finalizeAndGenerate(){
     `;
     footer.innerHTML = `
       <div class="final-actions" style="width:100%">
-        <button class="primary" onclick="sharePdf()">Save / Share PDF</button>
-        <button class="secondary" style="flex:1;" onclick="viewPdf()">View PDF</button>
-        <button class="secondary" style="flex:1;background:none;border:none;color:var(--paper-dim);" onclick="backToSummary()">← Back to review</button>
+        <button class="primary" onclick="sendPdf()">Send PDF</button>
+        <div style="display:flex;gap:10px;">
+          <button class="secondary" style="flex:1;" onclick="sharePdf()">Save</button>
+          <button class="secondary" style="flex:1;" onclick="viewPdf()">View</button>
+        </div>
+        <button class="secondary" style="background:none;border:none;color:var(--paper-dim);" onclick="backToSummary()">← Back to review</button>
       </div>
-      <div class="status-msg" style="position:absolute;left:0;right:0;bottom:calc(100% - 6px);">On iPhone: tap Save / Share, then “Save to Files” or attach to an email.</div>
+      <div id="sendHint" class="status-msg" style="position:absolute;left:0;right:0;bottom:calc(100% - 6px);"></div>
     `;
   }catch(e){
     console.error(e);
@@ -743,6 +746,30 @@ function viewPdf(){
   const url = URL.createObjectURL(window.__pdfBlob);
   const w = window.open(url, '_blank');
   if(!w) location.href = url; // popup blocked (common in in-app browsers)
+}
+const SEND_TO = 'timesheet@richmond-elevator.com';
+async function sendPdf(){
+  const hint = document.getElementById('sendHint');
+  // put the recipient on the clipboard so it's one paste away in Mail
+  try{ await navigator.clipboard.writeText(SEND_TO); }catch(e){}
+  const file = new File([window.__pdfBlob], window.__pdfName, {type:'application/pdf'});
+  if(navigator.canShare && navigator.canShare({files:[file]})){
+    if(hint) hint.textContent = `Pick Mail in the share sheet — ${SEND_TO} is copied, just paste it in “To”.`;
+    try{
+      await navigator.share({
+        files:[file],
+        title:`Timesheet - ${state.name}`,
+        text:`Timesheet - ${state.name}\nSend to: ${SEND_TO}`
+      });
+      return;
+    }catch(e){
+      if(e && e.name==='AbortError') return; // user closed the share sheet
+    }
+  }
+  // desktop / unsupported fallback: download the PDF and open a pre-addressed email
+  downloadPdf();
+  location.href = `mailto:${SEND_TO}?subject=${encodeURIComponent('Timesheet - '+state.name)}&body=${encodeURIComponent('Timesheet attached for '+state.name+'.')}`;
+  if(hint) hint.textContent = 'PDF downloaded — attach it to the email that just opened.';
 }
 async function sharePdf(){
   const file = new File([window.__pdfBlob], window.__pdfName, {type:'application/pdf'});
@@ -1191,5 +1218,5 @@ function drawSummaryPage(doc, font, bold, pageLabel){
 /* ---------------- init ---------------- */
 render();
 </script>
-</body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2ff9e984d847f0a',t:'MTc4NzU0NTgwMw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
