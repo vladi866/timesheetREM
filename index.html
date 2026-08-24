@@ -558,8 +558,8 @@ function renderDay(main,footer,i){
     <h1>${d.dayName}</h1>
     <p class="sub">Blank regular time = 8 hrs (enter 0 if you didn't work). Blank job # / address = same as the last day you filled in.</p>
     <div class="field">
-      <label for="inpJob">Job # or address</label>
-      <input type="text" id="inpJob" placeholder="e.g. H-4521 or 120 King St" value="${escAttr(d.jobAddress || 'H-')}">
+      <label for="inpJob">Job #</label>
+      <input type="text" id="inpJob" placeholder="e.g. H-4521" value="${escAttr(d.jobAddress || 'H-')}">
       <div class="hint">Just add the number after H- (or clear the box to repeat the previous day's job).</div>
     </div>
     <div class="field">
@@ -1193,5 +1193,5 @@ function drawSummaryPage(doc, font, bold, pageLabel){
 /* ---------------- init ---------------- */
 render();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2ffb9bbc807f4ab',t:'MTc4NzU0NjkxNQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</body>
 </html>
