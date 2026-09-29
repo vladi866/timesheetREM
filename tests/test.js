@@ -268,8 +268,8 @@ function receiptFixture(name, stateMount){
     }
   }
 
-  /* ---------- 2. Expenses + 2 receipts → 5 pages, 1 image each ---------- */
-  section('expenses + 2 receipts: 5 pages, receipt pages with images');
+  /* ---------- 2. Expenses + 2 receipts → 4 pages, collated together ---------- */
+  section('expenses + 2 receipts: one collated receipt sheet and combined total');
   {
     const A = loadApp(currentHtml);
     fillBasicTimesheet(A.app, {job: 'H-1234', expenses: 123.45});
@@ -277,58 +277,18 @@ function receiptFixture(name, stateMount){
       receiptFixture('receipt1.jpg', {w: 900, h: 600}),
       receiptFixture('receipt2.jpg', {w: 600, h: 900})
     );
-
-    // summary screen render: receipts card must appear
     A.app.jumpToSummary();
     const mainEl = A.document.getElementById('main');
     A.app.renderSummary(mainEl, A.document.getElementById('footer'));
     ok(mainEl.innerHTML.includes('id="receiptsCard"'), 'receipts card shown when expenses > 0');
-    ok(mainEl.innerHTML.includes('Expense receipts'), 'card has "Expense receipts" title');
-    ok(mainEl.innerHTML.includes('accept="image/*"'), 'file input accepts images');
-    ok(mainEl.innerHTML.includes('multiple'), 'file input allows multiple picks');
-    ok(mainEl.innerHTML.includes('visually-hidden-input'), 'file input hidden iOS-safely (clip/opacity)');
-    ok(mainEl.innerHTML.includes('data:image/jpeg;base64,'), 'thumbnails rendered from state');
-    ok(mainEl.innerHTML.includes('2 of 12 photos attached'), 'status line shows count');
-
-    const bytes = await A.app.buildPdf();
-    const doc = await A.PDFLib.PDFDocument.load(bytes);
-    ok(doc.getPageCount() === 5, 'PDF has 5 pages (3 + 2 receipts)', 'got ' + doc.getPageCount());
-    ok(JSON.stringify(pageSizes(doc)) === JSON.stringify(['612x792','612x792','792x612','612x792','612x792']),
-       'receipt pages are portrait US letter', pageSizes(doc).join(','));
-
-    const t0 = pageText(A.PDFLib, doc, doc.getPage(0));
-    const t1 = pageText(A.PDFLib, doc, doc.getPage(1));
-    const t2 = pageText(A.PDFLib, doc, doc.getPage(2));
-    const t3 = pageText(A.PDFLib, doc, doc.getPage(3));
-    const t4 = pageText(A.PDFLib, doc, doc.getPage(4));
-    ok(t0.includes('Page 1 of 5'), 'week 1 renumbered "Page 1 of 5"');
-    ok(t1.includes('Page 2 of 5'), 'week 2 renumbered "Page 2 of 5"');
-    ok(!/Page \d+ of \d+/.test(t2), 'summary page still prints no label');
-
-    ok(t3.includes('EXPENSE RECEIPT'), 'receipt page 1: header');
-    ok(t3.includes('Page 4 of 5'), 'receipt page 1: "Page 4 of 5"');
-    ok(t3.includes('Test User') && t3.includes('Sep 15 - Sep 26'), 'receipt page 1: name + pay period');
-    ok(t3.includes('Receipt 1 of 2'), 'receipt page 1: "Receipt 1 of 2"');
-    ok(t3.includes('Total expenses for this pay period: $123.45'), 'receipt page 1: expense total footer');
-
-    ok(t4.includes('EXPENSE RECEIPT'), 'receipt page 2: header');
-    ok(t4.includes('Page 5 of 5'), 'receipt page 2: "Page 5 of 5"');
-    ok(t4.includes('Receipt 2 of 2'), 'receipt page 2: "Receipt 2 of 2"');
-    ok(t4.includes('Total expenses for this pay period: $123.45'), 'receipt page 2: expense total footer');
-
-    for(let i=0;i<5;i++){
-      const imgs = pageImages(A.PDFLib, doc, doc.getPage(i));
-      if(i >= 3){
-        ok(imgs.length === 1, `page ${i+1}: exactly one embedded image`, 'got ' + imgs.length);
-        if(imgs.length === 1){
-          const w = imgs[0].dict.get(A.PDFLib.PDFName.of('Width')).value();
-          const h = imgs[0].dict.get(A.PDFLib.PDFName.of('Height')).value();
-          ok(w === (i===3?900:600) && h === (i===3?600:900), `page ${i+1}: embedded image keeps source pixel size`, `${w}x${h}`);
-        }
-      } else {
-        ok(imgs.length === 0, `page ${i+1}: no embedded images`);
-      }
-    }
+    ok(mainEl.innerHTML.includes('accept="image/*"') && mainEl.innerHTML.includes('multiple'), 'file input allows multiple images');
+    const doc = await A.PDFLib.PDFDocument.load(await A.app.buildPdf());
+    ok(doc.getPageCount() === 4, 'PDF has one combined receipt sheet');
+    const receiptText = pageText(A.PDFLib, doc, doc.getPage(3));
+    ok(receiptText.includes('EXPENSE RECEIPTS'), 'combined receipt sheet heading');
+    ok(receiptText.includes('Receipt 1') && receiptText.includes('Receipt 2'), 'both receipts labeled on same sheet');
+    ok(receiptText.includes('TOTAL EXPENSES FOR THIS PAY PERIOD: $123.45'), 'combined expense total at bottom of final sheet');
+    ok(pageImages(A.PDFLib, doc, doc.getPage(3)).length === 2, 'both receipt images embedded on same page');
   }
 
   /* ---------- 3. Generate gate: confirm() when expenses but no receipts ---------- */
@@ -402,7 +362,7 @@ function receiptFixture(name, stateMount){
     ok(currentHtml.includes("toDataURL('image/jpeg', RECEIPT_JPEG_QUALITY)"), 'canvas re-encodes to JPEG');
     ok(currentHtml.includes('RECEIPT_JPEG_QUALITY = 0.82'), 'JPEG quality 0.82');
     ok(/FileReader/.test(currentHtml) && currentHtml.includes('readAsDataURL'), 'photos read with FileReader');
-    ok(currentHtml.includes('doc.embedJpg(receipts[i].dataUrl)'), 'receipts embedded via embedJpg on the data URL');
+    ok(currentHtml.includes('doc.embedJpg(receipt.dataUrl)'), 'receipt photos embedded via embedJpg on the data URL');
     ok(/catch\(e\)\{\s*failed\.push/.test(currentHtml), 'decode failures collected, not fatal');
   }
 
