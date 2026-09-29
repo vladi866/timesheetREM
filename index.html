@@ -307,6 +307,55 @@
   .status-msg{
     text-align:center;font-size:12.5px;color:var(--paper-dim);margin-top:10px;
   }
+
+  /* ---- Expense receipts card (summary screen) ---- */
+  .receipts-card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:16px;
+    margin-bottom:20px;
+  }
+  .receipts-card .r-title{font-size:15px;font-weight:700;margin-bottom:4px;}
+  .receipts-card .r-sub{font-size:12.5px;color:var(--paper-dim);margin:0 0 14px;line-height:1.45;}
+  .add-receipts-btn{
+    display:flex;align-items:center;justify-content:center;gap:8px;
+    width:100%;padding:16px;
+    background:var(--panel2);
+    border:1.5px dashed var(--line);
+    border-radius:var(--radius);
+    color:var(--amber);
+    font-size:15.5px;font-weight:700;
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .add-receipts-btn:active{background:var(--panel);}
+  /* iOS-safe hidden file input: clipped + transparent, NOT display:none
+     (display:none makes Mobile Safari ignore label taps on the input). */
+  .visually-hidden-input{
+    position:absolute;
+    width:1px;height:1px;margin:-1px;padding:0;border:0;
+    opacity:0;
+    clip:rect(0 0 0 0);
+    clip-path:inset(50%);
+    overflow:hidden;
+    white-space:nowrap;
+  }
+  .receipt-thumbs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;}
+  .receipt-thumbs:empty{margin-top:0;}
+  .receipt-thumb{
+    position:relative;border-radius:8px;overflow:hidden;
+    border:1px solid var(--line);background:#0c0e10;
+  }
+  .receipt-thumb img{display:block;width:100%;height:88px;object-fit:cover;}
+  .receipt-thumb .rm{
+    position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;
+    border:1px solid rgba(255,255,255,.35);background:rgba(0,0,0,.68);
+    color:#fff;font-size:12px;font-weight:700;font-family:inherit;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;
+  }
+  .receipt-status{font-size:12px;color:var(--paper-dim);margin-top:10px;min-height:15px;line-height:1.4;}
+  .receipt-status.err{color:var(--danger);}
   .checkmark{
     width:64px;height:64px;border-radius:50%;
     background:rgba(92,184,122,.12);
@@ -342,7 +391,8 @@ const state = {
   periodMode:'twoWeeks',  // 'twoWeeks' = start + 14 days, 'custom' = start..endDate
   workedWeekends:false,
   wageLevel:'M',
-  days:[]
+  days:[],
+  receipts:[]   // {name, dataUrl, w, h, bytes} — photos of expense receipts
 };
 const WAGE_LEVELS = [
   {v:'H',label:'H — Helper'},
@@ -866,6 +916,8 @@ function renderSummary(main,footer){
       <div class="t-row"><span>Total pay-period hours</span><span>${(totals.rt+totals.ot).toFixed(2)}</span></div>
     </div>
 
+    ${totals.expenses > 0 ? receiptCardHtml() : ''}
+
     <ul class="summary-list">
       ${state.days.map((d,i)=>{
         const ed = effectiveDays()[i];
@@ -933,11 +985,136 @@ function escHtml(s){
 }
 function escAttr(s){ return escHtml(s); }
 
+/* ---------------- Expense receipts ---------------- */
+const MAX_RECEIPTS = 12;
+const MAX_RECEIPT_EDGE = 1400;    // px — long edge cap before JPEG re-encode
+const RECEIPT_JPEG_QUALITY = 0.82;
+
+function receiptCardHtml(){
+  return `
+    <div class="receipts-card" id="receiptsCard">
+      <div class="r-title">Expense receipts</div>
+      <p class="r-sub">Snap a photo of each receipt — they print as extra pages at the end of the PDF (up to ${MAX_RECEIPTS}).</p>
+      <label class="add-receipts-btn" for="receiptInput">+ Add receipt photos</label>
+      <input type="file" id="receiptInput" class="visually-hidden-input" accept="image/*" multiple onchange="handleReceiptFiles(this)">
+      <div class="receipt-thumbs" id="receiptThumbs">${receiptThumbsHtml()}</div>
+      <div class="receipt-status" id="receiptStatus">${escHtml(defaultReceiptStatus())}</div>
+    </div>
+  `;
+}
+function receiptThumbsHtml(){
+  return (state.receipts||[]).map((r,i)=>`
+    <div class="receipt-thumb">
+      <img src="${r.dataUrl}" alt="${escAttr(r.name || ('Receipt '+(i+1)))}">
+      <button type="button" class="rm" aria-label="Remove receipt ${i+1}" onclick="removeReceipt(${i})">&times;</button>
+    </div>`).join('');
+}
+function fmtBytes(n){
+  if(n >= 1024*1024) return (n/(1024*1024)).toFixed(1)+' MB';
+  return Math.max(1, Math.round(n/1024))+' KB';
+}
+function defaultReceiptStatus(){
+  const n = (state.receipts||[]).length;
+  if(!n) return 'No photos attached yet.';
+  const bytes = state.receipts.reduce((a,r)=>a+(r.bytes||0), 0);
+  return `${n} of ${MAX_RECEIPTS} photos attached (${fmtBytes(bytes)}).`;
+}
+function setReceiptStatus(msg, isErr){
+  const el = document.getElementById('receiptStatus');
+  if(!el) return;
+  el.textContent = msg;
+  el.classList.toggle('err', !!isErr);
+}
+/* Read one photo, shrink it on a canvas (max 1400px long edge) and re-encode
+   as JPEG q0.82 so multi-megapixel phone shots don't blow up the PDF. */
+function processReceiptFile(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      const img = new Image();
+      img.onload = ()=>{
+        try{
+          const sw = img.naturalWidth || img.width;
+          const sh = img.naturalHeight || img.height;
+          if(!sw || !sh) throw new Error('empty image');
+          const scale = Math.min(1, MAX_RECEIPT_EDGE / Math.max(sw, sh));
+          const w = Math.max(1, Math.round(sw*scale));
+          const h = Math.max(1, Math.round(sh*scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          const cx = canvas.getContext('2d');
+          cx.fillStyle = '#ffffff';   // transparent pixels -> white, JPEG has no alpha
+          cx.fillRect(0, 0, w, h);
+          cx.drawImage(img, 0, 0, w, h);
+          const dataUrl = canvas.toDataURL('image/jpeg', RECEIPT_JPEG_QUALITY);
+          const b64 = dataUrl.slice(dataUrl.indexOf(',')+1);
+          const bytes = Math.floor(b64.length*3/4) - (b64.endsWith('==')?2 : b64.endsWith('=')?1 : 0);
+          resolve({name:file.name||'receipt', dataUrl:dataUrl, w:w, h:h, bytes:bytes});
+        }catch(err){ reject(err); }
+      };
+      img.onerror = ()=>reject(new Error('could not decode image'));
+      img.src = reader.result;
+    };
+    reader.onerror = ()=>reject(new Error('could not read file'));
+    reader.readAsDataURL(file);
+  });
+}
+async function handleReceiptFiles(input){
+  const files = Array.prototype.slice.call(input.files || []);
+  input.value = '';   // so picking the same photo again still fires change
+  if(!files.length) return;
+  // the card only exists on the summary screen; nothing to do otherwise
+  if(!document.getElementById('receiptThumbs')) return;
+
+  let skippedByCap = 0;
+  const failed = [];
+  const total = files.length;
+  for(let i=0;i<files.length;i++){
+    const f = files[i];
+    if((state.receipts||[]).length >= MAX_RECEIPTS){ skippedByCap += total - i; break; }
+    setReceiptStatus(`Adding photo ${i+1} of ${total}\u2026`, false);
+    try{
+      const r = await processReceiptFile(f);
+      state.receipts.push(r);
+    }catch(e){
+      failed.push(f && f.name ? f.name : 'a file');
+    }
+  }
+  const thumbs = document.getElementById('receiptThumbs');
+  if(thumbs) thumbs.innerHTML = receiptThumbsHtml();
+  let msg = defaultReceiptStatus();
+  if(skippedByCap) msg += ` Limit is ${MAX_RECEIPTS} \u2014 ${skippedByCap} skipped.`;
+  if(failed.length) msg += ` Couldn\u2019t read: ${failed.join(', ')}.`;
+  setReceiptStatus(msg, failed.length>0);
+}
+function removeReceipt(i){
+  (state.receipts||[]).splice(i,1);
+  const thumbs = document.getElementById('receiptThumbs');
+  if(thumbs) thumbs.innerHTML = receiptThumbsHtml();
+  setReceiptStatus(defaultReceiptStatus(), false);
+}
+
 /* ---------------- PDF generation ---------------- */
 async function finalizeAndGenerate(){
   const status = document.getElementById('genStatus');
   const main = document.getElementById('main');
   const footer = document.getElementById('footer');
+
+  // Expenses on the sheet but no receipt photos attached: ask first.
+  // OK = go back to the receipts card (no PDF), Cancel = generate anyway.
+  const totals = computeTotals();
+  if(totals.expenses > 0 && (!state.receipts || state.receipts.length === 0)){
+    const addReceipts = window.confirm(
+      `You entered $${totals.expenses.toFixed(2)} in expenses, but no receipt photos are attached.\n\n` +
+      'Press OK to go back and add your receipts, or Cancel to generate the PDF without them.'
+    );
+    if(addReceipts){
+      const card = document.getElementById('receiptsCard');
+      if(card && card.scrollIntoView) card.scrollIntoView({behavior:'smooth', block:'center'});
+      return;
+    }
+  }
+
   status.textContent = 'Building your PDF…';
 
   try{
@@ -1014,11 +1191,55 @@ async function buildPdf(){
   const week1 = eff.filter(d=>d.week===1);
   const week2 = eff.filter(d=>d.week===2);
 
-  drawWeekPage(doc, font, bold, 1, week1, 'Page 1 of 3');
-  drawWeekPage(doc, font, bold, 2, week2, 'Page 2 of 3');
-  drawSummaryPage(doc, font, bold, 'Page 3 of 3');
+  const receipts = state.receipts || [];
+  const totalPages = 3 + receipts.length;
+
+  drawWeekPage(doc, font, bold, 1, week1, `Page 1 of ${totalPages}`);
+  drawWeekPage(doc, font, bold, 2, week2, `Page 2 of ${totalPages}`);
+  drawSummaryPage(doc, font, bold, `Page 3 of ${totalPages}`);
+
+  // one portrait page per attached expense receipt
+  for(let i=0;i<receipts.length;i++){
+    const img = await doc.embedJpg(receipts[i].dataUrl);
+    drawReceiptPage(doc, font, bold, img, i+1, receipts.length, totalPages);
+  }
 
   return await doc.save();
+}
+
+/* ============ RECEIPT PAGE (portrait US letter, one per receipt photo) ============ */
+function drawReceiptPage(doc, font, bold, img, receiptNum, receiptCount, totalPages){
+  const {rgb} = PDFLib;
+  const page = doc.addPage([612, 792]);
+  page.drawRectangle({x:0, y:0, width:612, height:792, color:rgb(1,1,1)});
+  const M = 40;
+  const ink = rgb(0.05,0.05,0.05);
+  const dim = rgb(0.3,0.3,0.3);
+
+  // ---- header + page label ----
+  let y = 792 - 50;
+  page.drawText('EXPENSE RECEIPT', {x:M, y, size:14, font:bold, color:ink});
+  const label = `Page ${3+receiptNum} of ${totalPages}`;
+  page.drawText(label, {x:612-M-bold.widthOfTextAtSize(label,9), y:y+3, size:9, font:bold, color:ink});
+  y -= 16;
+  page.drawText(`${state.name} \u00b7 ${periodRangeText()} \u00b7 Receipt ${receiptNum} of ${receiptCount}`,
+    {x:M, y, size:9.5, font, color:dim});
+  y -= 14;
+
+  // ---- photo: centered, scaled to fit inside the margins, aspect preserved ----
+  const footerY = 34;
+  const boxTop = y, boxBottom = footerY + 14;
+  const boxW = 612 - 2*M, boxH = boxTop - boxBottom;
+  const scale = Math.min(boxW/img.width, boxH/img.height);
+  const w = img.width*scale, h = img.height*scale;
+  const x = M + (boxW-w)/2;
+  const iy = boxBottom + (boxH-h)/2;
+  page.drawImage(img, {x:x, y:iy, width:w, height:h});
+  page.drawRectangle({x:x, y:iy, width:w, height:h, borderColor:rgb(0.4,0.4,0.4), borderWidth:0.75});
+
+  // ---- footer ----
+  page.drawText(`Total expenses for this pay period: $${computeTotals().expenses.toFixed(2)}`,
+    {x:M, y:footerY, size:9, font:bold, color:ink});
 }
 
 function truncate(s, colWidth){
