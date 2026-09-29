@@ -994,7 +994,7 @@ function receiptCardHtml(){
   return `
     <div class="receipts-card" id="receiptsCard">
       <div class="r-title">Expense receipts</div>
-      <p class="r-sub">Snap a photo of each receipt — they print as extra pages at the end of the PDF (up to ${MAX_RECEIPTS}).</p>
+      <p class="r-sub">Add up to ${MAX_RECEIPTS} receipt photos — up to six are neatly arranged on each PDF page.</p>
       <label class="add-receipts-btn" for="receiptInput">+ Add receipt photos</label>
       <input type="file" id="receiptInput" class="visually-hidden-input" accept="image/*" multiple onchange="handleReceiptFiles(this)">
       <div class="receipt-thumbs" id="receiptThumbs">${receiptThumbsHtml()}</div>
@@ -1192,54 +1192,54 @@ async function buildPdf(){
   const week2 = eff.filter(d=>d.week===2);
 
   const receipts = state.receipts || [];
-  const totalPages = 3 + receipts.length;
+  const receiptsPerPage = 6;
+  const receiptPages = Math.ceil(receipts.length / receiptsPerPage);
+  const totalPages = 3 + receiptPages;
 
   drawWeekPage(doc, font, bold, 1, week1, `Page 1 of ${totalPages}`);
   drawWeekPage(doc, font, bold, 2, week2, `Page 2 of ${totalPages}`);
   drawSummaryPage(doc, font, bold, `Page 3 of ${totalPages}`);
 
-  // one portrait page per attached expense receipt
-  for(let i=0;i<receipts.length;i++){
-    const img = await doc.embedJpg(receipts[i].dataUrl);
-    drawReceiptPage(doc, font, bold, img, i+1, receipts.length, totalPages);
+  // Collate up to six photos on each receipt sheet (two columns by three rows).
+  for(let p=0; p<receiptPages; p++){
+    const batch = receipts.slice(p*receiptsPerPage, (p+1)*receiptsPerPage);
+    const imgs = [];
+    for(const receipt of batch) imgs.push(await doc.embedJpg(receipt.dataUrl));
+    drawReceiptPage(doc, font, bold, imgs, p+1, receiptPages, p*receiptsPerPage, receipts.length, totalPages);
   }
-
   return await doc.save();
 }
 
-/* ============ RECEIPT PAGE (portrait US letter, one per receipt photo) ============ */
-function drawReceiptPage(doc, font, bold, img, receiptNum, receiptCount, totalPages){
+/* ============ RECEIPT SHEET (up to six photos per portrait page) ============ */
+function drawReceiptPage(doc, font, bold, imgs, sheetNum, sheetCount, firstReceipt, receiptCount, totalPages){
   const {rgb} = PDFLib;
   const page = doc.addPage([612, 792]);
   page.drawRectangle({x:0, y:0, width:612, height:792, color:rgb(1,1,1)});
-  const M = 40;
-  const ink = rgb(0.05,0.05,0.05);
-  const dim = rgb(0.3,0.3,0.3);
-
-  // ---- header + page label ----
-  let y = 792 - 50;
-  page.drawText('EXPENSE RECEIPT', {x:M, y, size:14, font:bold, color:ink});
-  const label = `Page ${3+receiptNum} of ${totalPages}`;
+  const M = 34, ink = rgb(0.05,0.05,0.05), dim = rgb(0.3,0.3,0.3);
+  let y = 742;
+  page.drawText('EXPENSE RECEIPTS', {x:M, y, size:14, font:bold, color:ink});
+  const label = `Page ${3+sheetNum} of ${totalPages}`;
   page.drawText(label, {x:612-M-bold.widthOfTextAtSize(label,9), y:y+3, size:9, font:bold, color:ink});
   y -= 16;
-  page.drawText(`${state.name} \u00b7 ${periodRangeText()} \u00b7 Receipt ${receiptNum} of ${receiptCount}`,
-    {x:M, y, size:9.5, font, color:dim});
-  y -= 14;
+  page.drawText(`${state.name} \u00b7 ${periodRangeText()} \u00b7 Photos ${firstReceipt+1}-${firstReceipt+imgs.length} of ${receiptCount}`,
+    {x:M, y, size:9, font, color:dim});
 
-  // ---- photo: centered, scaled to fit inside the margins, aspect preserved ----
-  const footerY = 34;
-  const boxTop = y, boxBottom = footerY + 14;
-  const boxW = 612 - 2*M, boxH = boxTop - boxBottom;
-  const scale = Math.min(boxW/img.width, boxH/img.height);
-  const w = img.width*scale, h = img.height*scale;
-  const x = M + (boxW-w)/2;
-  const iy = boxBottom + (boxH-h)/2;
-  page.drawImage(img, {x:x, y:iy, width:w, height:h});
-  page.drawRectangle({x:x, y:iy, width:w, height:h, borderColor:rgb(0.4,0.4,0.4), borderWidth:0.75});
-
-  // ---- footer ----
-  page.drawText(`Total expenses for this pay period: $${computeTotals().expenses.toFixed(2)}`,
-    {x:M, y:footerY, size:9, font:bold, color:ink});
+  const cols=2, rows=3, gap=10, top=708, bottom=sheetNum===sheetCount ? 62 : 30;
+  const cellW=(612-2*M-gap)/cols, cellH=(top-bottom-(rows-1)*gap)/rows;
+  imgs.forEach((img,i)=>{
+    const col=i%cols, row=Math.floor(i/cols);
+    const x=M+col*(cellW+gap), cellTop=top-row*(cellH+gap);
+    const scale=Math.min((cellW-12)/img.width,(cellH-12)/img.height);
+    const w=img.width*scale,h=img.height*scale;
+    const ix=x+(cellW-w)/2, iy=cellTop-cellH+(cellH-h)/2;
+    page.drawImage(img,{x:ix,y:iy,width:w,height:h});
+    page.drawRectangle({x:ix,y:iy,width:w,height:h,borderColor:rgb(0.4,0.4,0.4),borderWidth:0.75});
+    page.drawText(`Receipt ${firstReceipt+i+1}`,{x,y:cellTop-cellH+3,size:8,font,color:dim});
+  });
+  if(sheetNum===sheetCount){
+    const text=`TOTAL EXPENSES FOR THIS PAY PERIOD: $${computeTotals().expenses.toFixed(2)}`;
+    page.drawText(text,{x:M,y:32,size:11,font:bold,color:ink});
+  }
 }
 
 function truncate(s, colWidth){
