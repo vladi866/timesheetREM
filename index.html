@@ -173,6 +173,31 @@
   }
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
   .hint{font-size:12px;color:#6b7482;margin-top:6px;}
+  .hint.err{color:var(--danger);}
+
+  /* ---- segmented choice (Full 2 weeks / Custom) ---- */
+  .seg{
+    display:grid;grid-template-columns:1fr 1fr;gap:6px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:5px;
+  }
+  .seg-btn{
+    background:none;
+    border:1px solid transparent;
+    color:var(--paper-dim);
+    padding:12px 8px;
+    border-radius:7px;
+    font-size:14.5px;
+    font-weight:700;
+    font-family:inherit;
+    cursor:pointer;
+    transition:background .15s,color .15s;
+  }
+  .seg-btn.active{background:var(--amber);color:#20180a;}
+  .seg-btn:active{background:var(--panel2);}
+  .seg-btn.active:active{background:#d99411;}
 
   .toggle-row{
     display:flex;align-items:center;justify-content:space-between;
@@ -313,6 +338,8 @@
 const state = {
   name:'',
   startDate:'',
+  endDate:'',             // last day to log; only used when periodMode==='custom'
+  periodMode:'twoWeeks',  // 'twoWeeks' = start + 14 days, 'custom' = start..endDate
   workedWeekends:false,
   wageLevel:'M',
   days:[]
@@ -338,8 +365,48 @@ function fmtShort(d){
   return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
 }
 
+function toISODate(d){
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+function periodStart(){
+  return state.startDate ? new Date(state.startDate+'T00:00:00') : null;
+}
+/* Last day of the pay period. The 2-week window always frames the timesheet;
+   in custom mode it stops at the chosen finish date and the rest stays blank. */
+function periodEnd(){
+  const start = periodStart();
+  if(!start) return null;
+  const full = new Date(start); full.setDate(start.getDate()+13);
+  if(state.periodMode==='custom' && state.endDate){
+    const e = new Date(state.endDate+'T00:00:00');
+    if(isNaN(e.getTime())) return full;
+    if(e.getTime() < start.getTime()) return start;
+    return e.getTime() > full.getTime() ? full : e;
+  }
+  return full;
+}
+function currentPeriodMode(){
+  const btns = document.querySelectorAll('#periodSeg .seg-btn');
+  for(let i=0;i<btns.length;i++){
+    if(btns[i].classList.contains('active')) return btns[i].getAttribute('data-mode');
+  }
+  return state.periodMode;
+}
+/* Pay-period dates as printed on the PDF and shown on the review screen */
+function periodRangeText(){
+  if(state.days.length){
+    return `${fmtShort(state.days[0].date)} - ${fmtShort(state.days[state.days.length-1].date)}`;
+  }
+  const s = periodStart(), e = periodEnd();
+  return (s && e) ? `${fmtShort(s)} - ${fmtShort(e)}` : '';
+}
+
 function buildDays(){
-  const start = new Date(state.startDate+'T00:00:00');
+  const start = periodStart();
+  const end = periodEnd();
+  if(!start || !end) { state.days = []; return; }
   // keep anything already entered for matching dates (so going Back doesn't wipe data)
   const prev = {};
   (state.days||[]).forEach(d=>{ prev[d.date.toDateString()] = d; });
@@ -347,6 +414,9 @@ function buildDays(){
   for(let i=0;i<14;i++){
     const d = new Date(start);
     d.setDate(start.getDate()+i);
+    // custom range: stop at the finish date — the remaining days of the
+    // two weeks are simply never offered, so they print blank
+    if(d.getTime() > end.getTime()) break;
     const dow = d.getDay();
     const isWeekend = dow===0||dow===6;
     if(isWeekend && !state.workedWeekends) continue;
@@ -360,6 +430,30 @@ function buildDays(){
     });
   }
   state.days = days;
+}
+
+/* Dry run of buildDays() so we can warn about an empty range before moving on */
+function countLoggableDays(startDate, endDate, workedWeekends){
+  if(!startDate) return 0;
+  const start = new Date(startDate+'T00:00:00');
+  let end = new Date(start); end.setDate(start.getDate()+13);
+  if(endDate){
+    const e = new Date(endDate+'T00:00:00');
+    if(!isNaN(e.getTime())){
+      if(e.getTime() < start.getTime()) end = start;
+      else if(e.getTime() < end.getTime()) end = e;
+    }
+  }
+  let n = 0;
+  for(let i=0;i<14;i++){
+    const d = new Date(start);
+    d.setDate(start.getDate()+i);
+    if(d.getTime() > end.getTime()) break;
+    const dow = d.getDay();
+    if((dow===0||dow===6) && !workedWeekends) continue;
+    n++;
+  }
+  return n;
 }
 
 function rebuildSteps(){
@@ -417,10 +511,55 @@ function validateStep(step){
     if(!v){ flash('inpName'); return false; }
   }
   if(step==='payperiod'){
-    const v = document.getElementById('inpStart').value;
-    if(!v){ flash('inpStart'); return false; }
+    syncPayPeriodInputs();
+    setPayError('');
+    if(!state.startDate){
+      flash('inpStart');
+      setPayError('Pick the first day of your pay period.');
+      return false;
+    }
+    if(state.periodMode==='custom'){
+      if(!state.endDate){
+        flash('inpEnd');
+        setPayError('Pick the last day you worked.');
+        return false;
+      }
+      const s = periodStart();
+      const e = new Date(state.endDate+'T00:00:00');
+      const full = new Date(s); full.setDate(s.getDate()+13);
+      if(e.getTime() < s.getTime()){
+        flash('inpEnd');
+        setPayError('The finish date can\u2019t be before the start date.');
+        return false;
+      }
+      if(e.getTime() > full.getTime()){
+        flash('inpEnd');
+        setPayError('A pay period is two weeks \u2014 pick a finish date within 14 days of the start.');
+        return false;
+      }
+    }
+    if(countLoggableDays(state.startDate, state.periodMode==='custom'?state.endDate:'', state.workedWeekends) === 0){
+      setPayError('No days to log in that range. Turn on \u201cWorked the weekend?\u201d or pick a wider range.');
+      return false;
+    }
   }
   return true;
+}
+function setPayError(msg){
+  const el = document.getElementById('payError');
+  if(!el) return;
+  el.textContent = msg||'';
+  el.style.display = msg ? 'block' : 'none';
+}
+/* Pull the pay-period controls into state (called on every change + on Next) */
+function syncPayPeriodInputs(){
+  const s = document.getElementById('inpStart');
+  const e = document.getElementById('inpEnd');
+  const w = document.getElementById('inpWeekend');
+  if(s) state.startDate = s.value;
+  state.periodMode = currentPeriodMode();
+  if(e) state.endDate = e.value;
+  if(w) state.workedWeekends = w.checked;
 }
 function flash(id){
   const el = document.getElementById(id);
@@ -430,8 +569,7 @@ function flash(id){
 function saveStep(step){
   if(step==='name') state.name = document.getElementById('inpName').value.trim();
   if(step==='payperiod'){
-    state.startDate = document.getElementById('inpStart').value;
-    state.workedWeekends = document.getElementById('inpWeekend').checked;
+    syncPayPeriodInputs();
   }
   if(step==='wage') state.wageLevel = document.getElementById('inpWage').value;
   if(step.startsWith('day:')){
@@ -496,22 +634,37 @@ function renderName(main,footer){
 }
 
 function renderPayPeriod(main,footer){
+  const mode = state.periodMode==='custom' ? 'custom' : 'twoWeeks';
   main.innerHTML = `
     <div class="step-eyebrow">Step 2 of ${steps.length}</div>
     <h1>Pay period</h1>
     <p class="sub">Pick the first day (Week 1, Monday) of your two-week pay period.</p>
     <div class="field">
+      <label>Days to log</label>
+      <div class="seg" id="periodSeg" role="group" aria-label="Days to log">
+        <button type="button" class="seg-btn${mode==='twoWeeks'?' active':''}" data-mode="twoWeeks" aria-pressed="${mode==='twoWeeks'}" onclick="setPeriodMode('twoWeeks')">Full 2 weeks</button>
+        <button type="button" class="seg-btn${mode==='custom'?' active':''}" data-mode="custom" aria-pressed="${mode==='custom'}" onclick="setPeriodMode('custom')">Custom</button>
+      </div>
+      <div class="hint" id="modeHint"></div>
+    </div>
+    <div class="field">
       <label for="inpStart">Pay period start date</label>
       <input type="date" id="inpStart" value="${escAttr(state.startDate)}">
       <div class="hint" id="rangeHint"></div>
     </div>
+    <div class="field" id="customEnd" style="display:${mode==='custom'?'block':'none'}">
+      <label for="inpEnd">Finish date <span style="font-weight:400;color:#6b7482">(last day you worked)</span></label>
+      <input type="date" id="inpEnd" value="${escAttr(mode==='custom'?state.endDate:'')}">
+      <div class="hint">You\u2019ll only fill in the days up to this one \u2014 the rest of the two weeks prints blank.</div>
+    </div>
+    <div class="hint err" id="payError" style="display:none;margin:-8px 0 18px;"></div>
     <div class="toggle-row">
       <div>
         <div class="t-label">Worked the weekend?</div>
         <div class="t-sub">Toggle on to log Saturday &amp; Sunday too</div>
       </div>
       <label class="switch">
-        <input type="checkbox" id="inpWeekend" ${state.workedWeekends?'checked':''} onchange="updateRangeHint()">
+        <input type="checkbox" id="inpWeekend" ${state.workedWeekends?'checked':''} onchange="payPeriodChanged()">
         <div class="track"><div class="knob"></div></div>
       </label>
     </div>
@@ -520,16 +673,101 @@ function renderPayPeriod(main,footer){
     <button class="secondary" onclick="goBack()">Back</button>
     <button class="primary" onclick="goNext()">Next</button>
   `;
-  document.getElementById('inpStart').addEventListener('change', updateRangeHint);
+  document.getElementById('inpStart').addEventListener('change', ()=>{
+    state.startDate = document.getElementById('inpStart').value;
+    syncEndBounds();
+    // keep an already-chosen finish date inside the (new) two-week window
+    const endEl = document.getElementById('inpEnd');
+    if(endEl && endEl.value && state.startDate){
+      if(endEl.value < endEl.min) endEl.value = endEl.min;
+      else if(endEl.value > endEl.max) endEl.value = endEl.max;
+      state.endDate = endEl.value;
+    }
+    applyPeriodMode(currentPeriodMode());
+    updateRangeHint();
+  });
+  document.getElementById('inpEnd').addEventListener('change', ()=>{
+    state.endDate = document.getElementById('inpEnd').value;
+    updateRangeHint();
+  });
+  syncEndBounds();
+  applyPeriodMode(mode);
+  updateRangeHint();
+}
+/* Segmented control tap */
+function setPeriodMode(mode){
+  state.periodMode = mode;
+  setPayError('');
+  applyPeriodMode(mode);
+  updateRangeHint();
+}
+function applyPeriodMode(mode){
+  const btns = document.querySelectorAll('#periodSeg .seg-btn');
+  for(let i=0;i<btns.length;i++){
+    const on = btns[i].getAttribute('data-mode')===mode;
+    btns[i].classList.toggle('active', on);
+    btns[i].setAttribute('aria-pressed', on?'true':'false');
+  }
+  const wrap = document.getElementById('customEnd');
+  if(wrap) wrap.style.display = mode==='custom' ? 'block' : 'none';
+  const mh = document.getElementById('modeHint');
+  if(mh){
+    mh.textContent = mode==='custom'
+      ? 'Log just the days you worked \u2014 pick your first and last day.'
+      : 'Standard pay period: 14 days from your start date.';
+  }
+  if(mode==='custom'){
+    const endEl = document.getElementById('inpEnd');
+    // sensible default: the end of the two weeks, ready to be pulled back
+    if(endEl && !endEl.value && state.startDate){
+      const s = new Date(state.startDate+'T00:00:00');
+      const e = new Date(s); e.setDate(s.getDate()+13);
+      endEl.value = toISODate(e);
+      state.endDate = endEl.value;
+    }
+    syncEndBounds();
+  }
+}
+/* Keep the finish date picker inside the two-week pay period */
+function syncEndBounds(){
+  const endEl = document.getElementById('inpEnd');
+  if(!endEl) return;
+  if(state.startDate){
+    const s = new Date(state.startDate+'T00:00:00');
+    const e = new Date(s); e.setDate(s.getDate()+13);
+    endEl.min = toISODate(s);
+    endEl.max = toISODate(e);
+  }else{
+    endEl.removeAttribute('min');
+    endEl.removeAttribute('max');
+  }
+}
+function payPeriodChanged(){
+  syncPayPeriodInputs();
+  setPayError('');
   updateRangeHint();
 }
 function updateRangeHint(){
-  const v = document.getElementById('inpStart').value;
+  const startEl = document.getElementById('inpStart');
   const hint = document.getElementById('rangeHint');
+  if(!startEl || !hint) return;
+  const v = startEl.value;
   if(!v){ hint.textContent=''; return; }
   const start = new Date(v+'T00:00:00');
-  const end = new Date(start); end.setDate(start.getDate()+13);
-  hint.textContent = `Covers ${fmtShort(start)} – ${fmtShort(end)} (2 weeks)`;
+  if(currentPeriodMode()==='custom'){
+    const endEl = document.getElementById('inpEnd');
+    const ev = endEl ? endEl.value : '';
+    if(!ev){ hint.textContent = 'Now pick the last day you worked.'; return; }
+    const end = new Date(ev+'T00:00:00');
+    const n = Math.round((end.getTime()-start.getTime())/86400000)+1;
+    if(n < 1){ hint.textContent = 'Finish date is before the start date.'; return; }
+    if(n > 14){ hint.textContent = 'That\u2019s more than two weeks \u2014 a pay period ends '+fmtShort(new Date(start.getFullYear(),start.getMonth(),start.getDate()+13))+'.'; return; }
+    const loggable = countLoggableDays(v, ev, state.workedWeekends);
+    hint.textContent = `Covers ${fmtShort(start)} \u2013 ${fmtShort(end)} \u00b7 ${loggable} day${loggable===1?'':'s'} to fill in`;
+  }else{
+    const end = new Date(start); end.setDate(start.getDate()+13);
+    hint.textContent = `Covers ${fmtShort(start)} \u2013 ${fmtShort(end)} (2 weeks)`;
+  }
 }
 
 function renderWage(main,footer){
@@ -612,10 +850,12 @@ function renderDay(main,footer,i){
 
 function renderSummary(main,footer){
   const totals = computeTotals();
+  const isCustom = state.periodMode==='custom';
   main.innerHTML = `
     <div class="step-eyebrow">Review</div>
-    <h1>Two weeks, ready to go</h1>
-    <p class="sub">${escHtml(state.name)} · ${fmtShort(state.days[0].date)} – ${fmtShort(state.days[state.days.length-1].date)} · Wage ${state.wageLevel}</p>
+    <h1>${isCustom ? 'Your days, ready to go' : 'Two weeks, ready to go'}</h1>
+    <p class="sub">${escHtml(state.name)} · ${periodRangeText()} · Wage ${state.wageLevel}</p>
+    ${isCustom ? `<div class="day-badge" style="margin:-6px 0 20px;"><span class="dot">${state.days.length}</span> Custom range · the other days of the two weeks print blank</div>` : ''}
 
     <div class="totals-card">
       <div class="t-row"><span>Regular hours</span><span>${totals.rt.toFixed(2)}</span></div>
@@ -711,7 +951,7 @@ async function finalizeAndGenerate(){
       <div style="padding-top:30px;text-align:center;">
         <div class="checkmark">✓</div>
         <h1 style="text-align:center;">Timesheet ready</h1>
-        <p class="sub" style="text-align:center;">${escHtml(state.name)} · ${fmtShort(state.days[0].date)} – ${fmtShort(state.days[state.days.length-1].date)}</p>
+        <p class="sub" style="text-align:center;">${escHtml(state.name)} · ${periodRangeText()}</p>
       </div>
     `;
     footer.innerHTML = `
@@ -820,8 +1060,7 @@ function drawWeekPage(doc, font, bold, weekNum, days, pageLabel){
   page.drawText(state.name||'', {x:c0+42, y:y-idH+5.5, size:9, font, color:ink});
   page.drawLine({start:{x:cDivider-25,y:y}, end:{x:cDivider-25,y:y-idH}, thickness:0.8, color:border});
   page.drawText('DATE:', {x:cDivider-20, y:y-idH+5.5, size:9, font:bold, color:ink});
-  const rangeTxt = `${fmtShort(state.days[0].date)} - ${fmtShort(state.days[state.days.length-1].date)}`;
-  page.drawText(rangeTxt, {x:cDivider+16, y:y-idH+5.5, size:9, font, color:ink});
+  page.drawText(periodRangeText(), {x:cDivider+16, y:y-idH+5.5, size:9, font, color:ink});
   page.drawLine({start:{x:c5-10,y:y}, end:{x:c5-10,y:y-idH}, thickness:0.8, color:border});
   page.drawText(pageLabel, {x:c5-6, y:y-idH+5.5, size:8.5, font:bold, color:ink});
   y -= idH;
@@ -1018,8 +1257,7 @@ function drawSummaryPage(doc, font, bold, pageLabel){
   page.drawText(state.name||'', {x:M+140, y:y-boxH+6, size:9, font:bold, color:ink});
   page.drawRectangle({x:M+330, y:y-boxH, width:310, height:boxH, borderColor:lineC, borderWidth:0.9});
   page.drawText('Pay Period dates', {x:M+334, y:y-boxH+6, size:7.5, font, color:ink});
-  const rangeTxt = `${fmtShort(state.days[0].date)} - ${fmtShort(state.days[state.days.length-1].date)}`;
-  page.drawText(rangeTxt, {x:M+430, y:y-boxH+6, size:9, font:bold, color:ink});
+  page.drawText(periodRangeText(), {x:M+430, y:y-boxH+6, size:9, font:bold, color:ink});
   y -= boxH + 8;
 
   // ---- main table ----
